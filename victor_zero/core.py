@@ -16,3 +16,8 @@ class VictorZero:
         result = {"reflection": "Processing input...", "trust": 0.85}
         self.memory.add_event(result, source="victor_zero")
         return result
+
+    def run_loop(self, ticks: int = 10):
+        for i in range(ticks):
+            result = self.think()
+            print(f"[Victor-0] Tick {i}: {result['reflection']}")
