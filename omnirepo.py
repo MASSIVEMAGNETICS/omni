@@ -3,9 +3,15 @@
 Omnirepo - Unified Sovereign Intelligence Platform
 
 Brings Victor-0 and The AI Ear together with shared memory.
+
+Usage:
+    python omnirepo.py                 # Start unified system
+    python omnirepo.py --mode listen   # Start with audio listening
 """
 
 import sys
+
+import argparse
 
 print("[Omnirepo] Starting unified sovereign intelligence platform...")
 
@@ -25,5 +31,18 @@ try:
 except ImportError as e:
     print(f"[Omnirepo] Running in development mode: {e}")
 
+
+def main():
+    parser = argparse.ArgumentParser(description="Omnirepo - Unified Sovereign Intelligence")
+    parser.add_argument("--mode", default="full", choices=["full", "listen", "think"], help="Run mode")
+    args = parser.parse_args()
+
+    if args.mode == "listen":
+        print("[Omnirepo] Starting in listen mode (The AI Ear active)")
+    elif args.mode == "think":
+        print("[Omnirepo] Starting in think mode (Victor-0 active)")
+    else:
+        print("[Omnirepo] Full unified mode active")
+
 if __name__ == "__main__":
-    print("[Omnirepo] Omnirepo initialized successfully.")
+    main()
