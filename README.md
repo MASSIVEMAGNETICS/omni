@@ -30,5 +30,13 @@ Omnirepo/
 └── README.md
 ```
 
+## Usage
+
+```bash
+python omnirepo.py                 # Start full system
+python omnirepo.py --mode listen   # Start with audio listening
+python omnirepo.py --mode think    # Start with cognitive loop
+```
+
 Built for local deployment on personal hardware.
 Designed to help take over the world.
