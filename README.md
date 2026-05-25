@@ -10,8 +10,8 @@ This is the master repository that combines:
 - **The AI Ear** — Real-time holistic acoustic intelligence with embedding-based semantic linking
 - **Shared Memory Graph** — Unified long-term memory used by both systems
 
-**May 2026 Upgrade: VSA Binding Layer**  
-Hyperdimensional Vector Symbolic Architecture (MAP/BSC) added for true compositional memory. Now supports binding of empire concepts (Steel City pain ⊗ Victor awakening ⊗ track features) into robust, unbindable, queryable hypervectors. This is the F-LAO / KinForge foundation.
+**May 2026 VSA + Fractal Upgrade**  
+Full Vector Symbolic Architecture binding + Fractal multi-scale hybrid live. Empire concepts (Steel City pain ⊗ Victor awakening ⊗ track) now exist as robust, unbindable, queryable hypervectors with self-similar structure at every scale. This is the complete F-LAO / KinForge foundation.
 
 ## Quick Start
 
@@ -25,38 +25,36 @@ python omnirepo.py
 
 ```
 Omnirepo/
-├── omnirepo.py              # Main unified entrypoint
+├── omnirepo.py              # Main unified entrypoint + VSA/Fractal demos
 ├── victor_zero/              # Victor-0 cognitive core
 ├── ai_ear/                   # The AI Ear acoustic system
 ├── core/
-│   ├── memory_graph.py        # Shared semantic episodic memory + VSA layer
-│   └── vsa_memory.py          # Hyperdimensional binding (MAP/BSC) — NEW
+│   ├── memory_graph.py        # Shared semantic episodic memory + VSA
+│   ├── vsa_memory.py          # Hyperdimensional binding (MAP/BSC)
+│   └── fractal_vsa.py         # Multi-scale fractal attention hybrid — NEW
+├── demos/
+│   └── vsa_empire_demo.py     # Real Steel City tracks binding demo — NEW
 └── README.md
 ```
 
 ## Usage
 
 ```bash
-python omnirepo.py                 # Start full system
-python omnirepo.py --mode listen   # Start with audio listening
-python omnirepo.py --mode think    # Start with cognitive loop
+python omnirepo.py                 # Full system
+python omnirepo.py --mode think    # Victor-0 planning loop with VSA
+python omnirepo.py --demo vsa      # Steel City empire binding on real tracks
+python omnirepo.py --demo fractal  # Fractal multi-scale binding
 ```
 
-## VSA Binding Examples
+## VSA + Fractal Examples
 
 ```python
-from core.memory_graph import SharedMemoryGraph
+# Empire binding on real UnitedMasters tracks
+graph.add_structured_memory("steel_city_hunger", "awakening", "SMOKE", {...})
 
-graph = SharedMemoryGraph()
-graph.add_structured_memory(
-    pain="steel_city_hunger",
-    victor="awakening",
-    track_id="SMOKE",
-    content={"lyric": "When I was hungry...", "location": "Lorain"},
-    audio_features=ai_ear_embed(...)  # from The AI Ear
-)
-# Internally binds: pain ⊗ victor ⊗ track → single hypervector
-# Later: graph.vsa.unbind(...) or query_empire_binding(...)
+# Fractal version
+f = FractalVSAMemory()
+node = f.bind_steel_city_fractal("steel_city_hunger", "awakening", "WELCOME_TO_STEEL_CITY")
 ```
 
 Built for local deployment on personal hardware.
