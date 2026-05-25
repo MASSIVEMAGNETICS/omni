@@ -4,10 +4,14 @@ Shared Memory Graph for Omnirepo
 
 Unified semantic + episodic memory system with REM-style consolidation.
 
+VSA UPGRADE (May 2026): Now includes hyperdimensional binding layer for
+compositional, robust, queryable structured memory (F-LAO / KinForge ready).
+
 Features:
 - Episodic + Semantic nodes
 - Embedding-based semantic linking
-- REM-style memory consolidation (high-importance memories are strengthened and abstracted)
+- REM-style memory consolidation
+- VSA binding (MAP/BSC) for role-filler, pain⊗victor⊗track structures
 """
 
 from __future__ import annotations
@@ -22,6 +26,14 @@ try:
     HAS_EMBEDDINGS = True
 except ImportError:
     HAS_EMBEDDINGS = False
+
+# VSA Integration
+try:
+    from .vsa_memory import VSAMemory, VSANode
+    HAS_VSA = True
+except ImportError:
+    HAS_VSA = False
+    print("[SharedMemory] VSA layer not found — running in legacy mode")
 
 
 @dataclass
@@ -42,6 +54,7 @@ class SharedMemoryGraph:
         self.edges: List[Dict] = []
         self.max_nodes = max_nodes
         self.embedder = None
+        self.vsa = None
 
         if HAS_EMBEDDINGS:
             try:
@@ -49,6 +62,10 @@ class SharedMemoryGraph:
                 print("[SharedMemory] Embedding model loaded")
             except Exception as e:
                 print(f"[SharedMemory] Could not load embeddings: {e}")
+
+        if HAS_VSA:
+            self.vsa = VSAMemory(binding_mode="MAP")
+            print("[SharedMemory] VSA binding layer activated — compositional memory enabled")
 
     def add_event(self, content: Dict[str, Any], source: str = "unknown", importance: float = 0.6) -> str:
         node_id = str(uuid.uuid4())
@@ -69,8 +86,26 @@ class SharedMemoryGraph:
         if embedding is not None:
             self._link_similar(node_id, embedding)
 
+        # VSA: also store as hypervector if available
+        if self.vsa is not None:
+            self.vsa.add_vsa_event(content, source=source)
+
         if len(self.nodes) > self.max_nodes:
             self._prune_oldest()
+
+        return node_id
+
+    def add_structured_memory(self, pain: str, victor: str, track_id: str,
+                              content: Dict[str, Any], audio_features: Optional[np.ndarray] = None) -> str:
+        """
+        Empire-specific: Bind pain ⊗ victor ⊗ track into VSA hypervector + store in graph.
+        This is the canonical "Steel City pain ⊗ Victor awakening" pattern.
+        """
+        node_id = self.add_event(content, source="empire_binding", importance=0.95)
+
+        if self.vsa is not None:
+            self.vsa.bind_steel_city_memory(pain, victor, track_id, audio_features)
+            print(f"[VSA] Bound empire triple: {pain} ⊗ {victor} ⊗ {track_id}")
 
         return node_id
 
@@ -87,41 +122,39 @@ class SharedMemoryGraph:
 
     def consolidate(self, min_importance: float = 0.7):
         """
-        REM-style memory consolidation.
+        REM-style memory consolidation + VSA bundling.
 
         - High-importance episodic memories are strengthened and abstracted into semantic nodes.
-        - Low-importance or redundant memories are pruned or downgraded.
-        - Connections between important memories are reinforced.
+        - VSA: high-importance items are bundled into superposed hypervectors for robust recall.
         """
-        print("[SharedMemory] Running REM-style memory consolidation...")
+        print("[SharedMemory] Running REM-style memory consolidation + VSA bundling...")
 
         high_importance = [n for n in self.nodes.values() if n.importance >= min_importance and n.type == "episode"]
 
+        vsa_bundle = []
         for node in high_importance:
-            # Strengthen importance (like memory rehearsal)
             node.importance = min(1.0, node.importance + 0.1)
-
-            # Create or link to semantic concept
             concept_text = str(node.content)[:100]
             concept_id = self._get_or_create_semantic_node(concept_text)
-
             self.edges.append({
-                "source": node.id,
-                "target": concept_id,
-                "relation": "consolidated_to",
-                "weight": 0.9
+                "source": node.id, "target": concept_id,
+                "relation": "consolidated_to", "weight": 0.9
             })
+            if self.vsa is not None:
+                vsa_bundle.append(self.vsa.encode(concept_text))
 
-        # Downgrade or prune low-importance old episodes
-        now = datetime.now(timezone.utc)
+        if vsa_bundle and self.vsa is not None:
+            superposed = self.vsa.bundle(vsa_bundle)
+            self.vsa.memory.append(VSANode(hv=superposed, label="consolidated_bundle", timestamp=np.datetime64('now').astype(str), source="consolidation"))
+
+        # Decay low-importance
         for node in list(self.nodes.values()):
             if node.type == "episode" and node.importance < 0.4:
-                # Simulate memory decay
                 node.importance *= 0.85
                 if node.importance < 0.2:
                     self._prune_node(node.id)
 
-        print(f"[SharedMemory] Consolidation complete. Nodes: {len(self.nodes)}, Edges: {len(self.edges)}")
+        print(f"[SharedMemory] Consolidation complete. Nodes: {len(self.nodes)}, Edges: {len(self.edges)}, VSA nodes: {len(self.vsa.memory) if self.vsa else 0}")
 
     def _get_or_create_semantic_node(self, text: str) -> str:
         for node in self.nodes.values():
@@ -157,11 +190,14 @@ class SharedMemoryGraph:
         return " | ".join(parts) if parts else "No recent activity"
 
     def get_stats(self) -> Dict:
-        return {
+        base = {
             "total_nodes": len(self.nodes),
             "edges": len(self.edges),
             "embedding_enabled": self.embedder is not None
         }
+        if self.vsa:
+            base.update({"vsa": self.vsa.get_stats()})
+        return base
 
     def _prune_oldest(self):
         if not self.nodes:
