@@ -1,0 +1,47 @@
+name: Audio Closed Loop Contract
+
+on:
+  push:
+    paths:
+      - "packages/audio-ear/**"
+      - "packages/music-engine/**"
+      - ".github/workflows/audio-closed-loop-contract.yml"
+  pull_request:
+    paths:
+      - "packages/audio-ear/**"
+      - "packages/music-engine/**"
+      - ".github/workflows/audio-closed-loop-contract.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  contract-tests:
+    name: Python ${{ matrix.python-version }} contracts
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Compile package sources
+        run: python -m compileall -q packages/audio-ear/src packages/music-engine/src
+
+      - name: Test BandoRank
+        env:
+          PYTHONPATH: packages/audio-ear/src:packages/music-engine/src
+        run: python -m unittest discover -s packages/audio-ear/tests -p "test_*.py" -v
+
+      - name: Test closed-loop orchestration
+        env:
+          PYTHONPATH: packages/audio-ear/src:packages/music-engine/src
+        run: python -m unittest discover -s packages/music-engine/tests -p "test_*.py" -v
