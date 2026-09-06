@@ -1,0 +1,33 @@
+name: AI Ear Evidence Boundary
+
+on:
+  pull_request:
+    paths:
+      - "ai_ear/core/pipeline.py"
+      - "tests/test_ai_ear_pipeline.py"
+      - ".github/workflows/ai-ear-evidence.yml"
+  push:
+    branches:
+      - "chatgpt/close-ai-ear-placeholder-20260906"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install bounded test dependency
+        run: python -m pip install --disable-pip-version-check numpy
+      - name: Run AI Ear evidence regressions
+        env:
+          PYTHONHASHSEED: "0"
+        run: python -m unittest -v tests.test_ai_ear_pipeline
