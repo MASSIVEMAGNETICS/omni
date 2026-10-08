@@ -3,18 +3,23 @@
 
 This module is deliberately local and deterministic.  It does not pretend that
 silence, ``None`` or an unavailable microphone is audio evidence.  Certification
-paths must provide real PCM WAV bytes or a real WAV file path.
+paths must provide RIFF/WAVE integer PCM format-tag-1 bytes or a matching file.
+WAVE_FORMAT_EXTENSIBLE is rejected consistently until a dedicated parser is
+implemented, instead of inheriting Python-version-dependent behavior.
 """
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 import hashlib
 import io
 import math
 import os
 from pathlib import Path
+import stat
 import struct
-from typing import BinaryIO, Dict, Iterable, List, Optional, Union
+import tempfile
+from typing import BinaryIO, Dict, Iterator, List, Optional, Tuple, Union
 import wave
 
 from core.memory_graph import SharedMemoryGraph
@@ -36,19 +41,175 @@ class AudioPipeline:
 
     MAX_IN_MEMORY_BYTES = 64 * 1024 * 1024
     MAX_FILE_BYTES = 512 * 1024 * 1024
+    MAX_DURATION_SECONDS = 10 * 60
+    MAX_DECODED_SAMPLES = 30_000_000
     CHUNK_FRAMES = 8192
+    FILE_COPY_CHUNK_BYTES = 1024 * 1024
+    MAX_RIFF_CHUNKS = 1024
 
     def __init__(self, memory: Optional[SharedMemoryGraph] = None):
         self.memory = memory if memory is not None else SharedMemoryGraph()
         print("[The AI Ear] Initialized with deterministic local WAV analysis")
 
     @staticmethod
-    def _hash_file(path: Path) -> str:
-        digest = hashlib.sha256()
-        with path.open("rb") as handle:
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                digest.update(chunk)
-        return digest.hexdigest()
+    def _file_version(file_stat: os.stat_result) -> Tuple[int, int, int, int, int]:
+        """Return mutation-relevant metadata for an already-open file."""
+        return (
+            file_stat.st_dev,
+            file_stat.st_ino,
+            file_stat.st_size,
+            file_stat.st_mtime_ns,
+            file_stat.st_ctime_ns,
+        )
+
+    @classmethod
+    @contextmanager
+    def _snapshot_file(cls, path: Path) -> Iterator[Tuple[BinaryIO, str]]:
+        """Open once and yield an immutable, hash-bound snapshot of ``path``.
+
+        The pathname is never reopened for analysis. Small inputs remain in
+        memory; larger bounded inputs spill to an anonymous temporary file.
+        Metadata changes to the opened source during acquisition fail closed.
+        """
+        flags = os.O_RDONLY
+        flags |= getattr(os, "O_BINARY", 0)
+        flags |= getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NONBLOCK", 0)
+
+        try:
+            descriptor = os.open(path, flags)
+        except (OSError, TypeError) as exc:
+            raise AudioAnalysisError(f"unable to open audio file: {exc}") from exc
+
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise AudioAnalysisError("audio source must be a regular file")
+            if before.st_size <= 0:
+                raise AudioAnalysisError("audio file is empty")
+            if before.st_size > cls.MAX_FILE_BYTES:
+                raise AudioAnalysisError(
+                    f"audio file exceeds {cls.MAX_FILE_BYTES} byte limit"
+                )
+
+            with os.fdopen(descriptor, "rb", closefd=True) as source_handle:
+                descriptor = -1
+                with tempfile.SpooledTemporaryFile(
+                    max_size=cls.MAX_IN_MEMORY_BYTES,
+                    mode="w+b",
+                ) as snapshot:
+                    digest = hashlib.sha256()
+                    total_bytes = 0
+
+                    while True:
+                        try:
+                            chunk = source_handle.read(cls.FILE_COPY_CHUNK_BYTES)
+                        except OSError as exc:
+                            raise AudioAnalysisError(
+                                f"unable to snapshot audio file: {exc}"
+                            ) from exc
+                        if not chunk:
+                            break
+                        total_bytes += len(chunk)
+                        if total_bytes > cls.MAX_FILE_BYTES:
+                            raise AudioAnalysisError(
+                                f"audio file exceeds {cls.MAX_FILE_BYTES} byte limit"
+                            )
+                        digest.update(chunk)
+                        snapshot.write(chunk)
+
+                    after = os.fstat(source_handle.fileno())
+                    if cls._file_version(before) != cls._file_version(after):
+                        raise AudioAnalysisError(
+                            "audio file changed while evidence was being acquired"
+                        )
+                    if total_bytes == 0:
+                        raise AudioAnalysisError("audio file is empty")
+
+                    snapshot.seek(0)
+                    yield snapshot, digest.hexdigest()
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+    @classmethod
+    def _require_supported_wave_format(cls, handle: BinaryIO) -> None:
+        """Enforce one WAV contract on every supported Python runtime."""
+        original_position = handle.tell()
+        try:
+            handle.seek(0, os.SEEK_END)
+            total_size = handle.tell()
+            handle.seek(0)
+            header = handle.read(12)
+            if len(header) != 12 or header[:4] != b"RIFF" or header[8:] != b"WAVE":
+                raise AudioAnalysisError("input is not a RIFF/WAVE container")
+
+            riff_end = struct.unpack("<I", header[4:8])[0] + 8
+            if riff_end < 12 or riff_end > total_size:
+                raise AudioAnalysisError("RIFF/WAVE container is truncated")
+
+            cursor = 12
+            for _ in range(cls.MAX_RIFF_CHUNKS):
+                if cursor + 8 > riff_end:
+                    break
+                handle.seek(cursor)
+                chunk_header = handle.read(8)
+                if len(chunk_header) != 8:
+                    raise AudioAnalysisError("RIFF/WAVE chunk header is truncated")
+
+                chunk_id = chunk_header[:4]
+                chunk_size = struct.unpack("<I", chunk_header[4:])[0]
+                chunk_data_start = cursor + 8
+                chunk_data_end = chunk_data_start + chunk_size
+                if chunk_data_end > riff_end or chunk_data_end > total_size:
+                    raise AudioAnalysisError("RIFF/WAVE chunk data is truncated")
+
+                if chunk_id == b"fmt ":
+                    if chunk_size < 16:
+                        raise AudioAnalysisError("RIFF/WAVE fmt chunk is too short")
+                    handle.seek(chunk_data_start)
+                    format_tag_bytes = handle.read(2)
+                    if len(format_tag_bytes) != 2:
+                        raise AudioAnalysisError("RIFF/WAVE fmt tag is truncated")
+                    format_tag = struct.unpack("<H", format_tag_bytes)[0]
+                    if format_tag == 1:
+                        return
+                    if format_tag == 0xFFFE:
+                        raise AudioAnalysisError(
+                            "WAVE_FORMAT_EXTENSIBLE is not supported; "
+                            "use RIFF/WAVE integer PCM format tag 1"
+                        )
+                    raise AudioAnalysisError(
+                        f"unsupported WAV format tag: {format_tag}"
+                    )
+
+                cursor = chunk_data_end + (chunk_size & 1)
+            else:
+                raise AudioAnalysisError("RIFF/WAVE contains too many chunks")
+
+            raise AudioAnalysisError("RIFF/WAVE fmt chunk is missing")
+        finally:
+            handle.seek(original_position)
+
+    @classmethod
+    def _analyze_snapshot(
+        cls,
+        snapshot: BinaryIO,
+        *,
+        source_label: str,
+    ) -> Dict[str, float]:
+        snapshot.seek(0)
+        cls._require_supported_wave_format(snapshot)
+        snapshot.seek(0)
+        try:
+            with wave.open(snapshot, "rb") as handle:
+                return cls._measure_wave(handle)
+        except AudioAnalysisError:
+            raise
+        except (wave.Error, EOFError, OSError, struct.error) as exc:
+            raise AudioAnalysisError(
+                f"invalid format-tag-1 PCM WAV {source_label}: {exc}"
+            ) from exc
 
     @staticmethod
     def _decode_pcm(raw: bytes, sample_width: int) -> List[float]:
@@ -88,23 +249,55 @@ class AudioPipeline:
             raise AudioAnalysisError(f"invalid channel count: {channels}")
         if sample_rate <= 0 or sample_rate > 768000:
             raise AudioAnalysisError(f"invalid sample rate: {sample_rate}")
+        if sample_width not in (1, 2, 3, 4):
+            raise AudioAnalysisError(
+                f"unsupported PCM sample width: {sample_width} bytes"
+            )
         if frame_count <= 0:
             raise AudioAnalysisError("audio contains no PCM frames")
+        if frame_count > sample_rate * cls.MAX_DURATION_SECONDS:
+            raise AudioAnalysisError(
+                f"audio exceeds {cls.MAX_DURATION_SECONDS} second duration limit"
+            )
+
+        declared_samples = frame_count * channels
+        if declared_samples > cls.MAX_DECODED_SAMPLES:
+            raise AudioAnalysisError(
+                f"audio exceeds {cls.MAX_DECODED_SAMPLES} decoded sample limit"
+            )
 
         sum_sq = 0.0
         sum_value = 0.0
         peak = 0.0
         zero_crossings = 0
         mono_frames = 0
+        decoded_samples = 0
         previous: Optional[float] = None
+        bytes_per_frame = sample_width * channels
 
         while True:
             raw = handle.readframes(cls.CHUNK_FRAMES)
             if not raw:
                 break
+            if len(raw) % bytes_per_frame:
+                raise AudioAnalysisError("PCM data ends with a partial frame")
+
+            chunk_samples = len(raw) // sample_width
+            if decoded_samples + chunk_samples > cls.MAX_DECODED_SAMPLES:
+                raise AudioAnalysisError(
+                    f"audio exceeds {cls.MAX_DECODED_SAMPLES} decoded sample limit"
+                )
+
             samples = cls._decode_pcm(raw, sample_width)
-            usable = len(samples) - (len(samples) % channels)
-            for index in range(0, usable, channels):
+            if len(samples) != chunk_samples:
+                raise AudioAnalysisError("PCM decoder returned an incomplete chunk")
+
+            chunk_frames = chunk_samples // channels
+            if mono_frames + chunk_frames > frame_count:
+                raise AudioAnalysisError("decoded frame count exceeds WAV header")
+
+            decoded_samples += chunk_samples
+            for index in range(0, len(samples), channels):
                 frame = samples[index : index + channels]
                 mono = sum(frame) / channels
                 absolute = abs(mono)
@@ -118,6 +311,11 @@ class AudioPipeline:
 
         if mono_frames == 0:
             raise AudioAnalysisError("audio decoded to zero frames")
+        if mono_frames != frame_count:
+            raise AudioAnalysisError(
+                f"PCM data is truncated: expected {frame_count} frames, "
+                f"decoded {mono_frames}"
+            )
 
         rms = math.sqrt(sum_sq / mono_frames)
         duration = mono_frames / float(sample_rate)
@@ -152,29 +350,23 @@ class AudioPipeline:
                     f"in-memory audio exceeds {cls.MAX_IN_MEMORY_BYTES} byte limit"
                 )
             sha256 = hashlib.sha256(payload).hexdigest()
-            try:
-                with wave.open(io.BytesIO(payload), "rb") as handle:
-                    features = cls._measure_wave(handle)
-            except (wave.Error, EOFError) as exc:
-                raise AudioAnalysisError(f"invalid PCM WAV payload: {exc}") from exc
+            with io.BytesIO(payload) as snapshot:
+                features = cls._analyze_snapshot(
+                    snapshot,
+                    source_label="payload",
+                )
             source_kind = "bytes"
         else:
-            path = Path(source).expanduser().resolve(strict=True)
-            stat = path.stat()
-            if not path.is_file():
-                raise AudioAnalysisError("audio source must be a regular file")
-            if stat.st_size <= 0:
-                raise AudioAnalysisError("audio file is empty")
-            if stat.st_size > cls.MAX_FILE_BYTES:
-                raise AudioAnalysisError(
-                    f"audio file exceeds {cls.MAX_FILE_BYTES} byte limit"
-                )
-            sha256 = cls._hash_file(path)
             try:
-                with wave.open(str(path), "rb") as handle:
-                    features = cls._measure_wave(handle)
-            except (wave.Error, EOFError) as exc:
-                raise AudioAnalysisError(f"invalid PCM WAV file: {exc}") from exc
+                path = Path(source).expanduser()
+            except (TypeError, ValueError) as exc:
+                raise AudioAnalysisError(f"invalid audio path: {exc}") from exc
+
+            with cls._snapshot_file(path) as (snapshot, sha256):
+                features = cls._analyze_snapshot(
+                    snapshot,
+                    source_label="file",
+                )
             source_kind = "file"
 
         return {
